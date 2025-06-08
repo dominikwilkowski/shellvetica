@@ -2,5 +2,12 @@
 name = "shellvetica"
 version = "1.0.0-alpha"
 edition = "2024"
+authors = ["Dominik Wilkowski <Hi@Dominik-Wilkowski.com>"]
+license = "GPL-3.0-or-later"
+description = "Bring your shell output to the web"
+homepage = "https://github.com/dominikwilkowski/shellvetica"
+repository = "https://github.com/dominikwilkowski/shellvetica"
+categories = ["command-line-utilities", "text-processing"]
+keywords = ["cli", "ANSI", "shell", "web", "pipe"]
 
 [dependencies]
