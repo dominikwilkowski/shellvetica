@@ -11,3 +11,4 @@ categories = ["command-line-utilities", "text-processing"]
 keywords = ["cli", "ANSI", "shell", "web", "pipe"]
 
 [dependencies]
+vte = "0.15.0"
