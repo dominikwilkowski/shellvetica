@@ -10,7 +10,7 @@ pub enum AnsiNode {
 	},
 	Esc {
 		intermediates: Vec<u8>,
-		code: u8,
+		byte: u8,
 	},
 	ControlChar(u8),
 	Osc {
@@ -19,43 +19,74 @@ pub enum AnsiNode {
 	},
 }
 
-pub struct AstBuilder {
-	pub nodes: Vec<AnsiNode>,
-	current_text: String,
-}
-
-impl AstBuilder {
-	fn flush_text(&mut self) {
-		if !self.current_text.is_empty() {
-			self.nodes.push(AnsiNode::Text(self.current_text.drain(..).collect()));
+impl AnsiNode {
+	pub fn is_zero_width(&self) -> bool {
+		match self {
+			AnsiNode::Text(s) => s.is_empty(),
+			AnsiNode::ControlChar(b) => matches!(b,
+					b'\x00'..=b'\x08' | b'\x0B'..=b'\x0C' | b'\x0E'..=b'\x1F' | b'\x7F'
+			),
+			_ => false,
 		}
 	}
 
-	pub fn parse(input: &str) -> Self {
+	pub fn is_cursor_movement(&self) -> bool {
+		match self {
+			AnsiNode::Csi { code, .. } => {
+				matches!(code, 'H' | 'J' | 'K' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'S' | 'T' | 'f' | 's' | 'u')
+			},
+			_ => false,
+		}
+	}
+}
+
+pub struct TerminalOutputParser {
+	nodes: Vec<AnsiNode>,
+	current_text: String,
+}
+
+impl TerminalOutputParser {
+	fn flush_text(&mut self) {
+		if !self.current_text.is_empty() {
+			self.nodes.push(AnsiNode::Text(std::mem::take(&mut self.current_text)));
+		}
+	}
+
+	pub fn parse_to_nodes(input: &[u8]) -> Vec<AnsiNode> {
 		let mut builder = Self {
 			nodes: Vec::new(),
 			current_text: String::new(),
 		};
 		let mut parser = Parser::new();
 
-		parser.advance(&mut builder, input.as_bytes());
+		parser.advance(&mut builder, input);
 		builder.flush_text();
 
-		builder
+		builder.nodes
 	}
 }
 
-impl Perform for AstBuilder {
+impl Perform for TerminalOutputParser {
 	fn print(&mut self, c: char) {
 		self.current_text.push(c);
 	}
 
 	fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, code: char) {
 		self.flush_text();
-		let params = params.iter().flat_map(|subparams| subparams.iter().copied()).collect::<Vec<u16>>();
+
+		let capacity: usize = params.iter().map(|p| p.len()).sum();
+		let mut params_vec = Vec::with_capacity(capacity);
+		for subparams in params {
+			params_vec.extend(subparams.iter().copied());
+		}
+
 		self.nodes.push(AnsiNode::Csi {
-			params,
-			intermediates: intermediates.to_vec(),
+			params: params_vec,
+			intermediates: if intermediates.is_empty() {
+				Vec::new()
+			} else {
+				intermediates.to_vec()
+			},
 			code,
 		});
 	}
@@ -63,15 +94,19 @@ impl Perform for AstBuilder {
 	fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
 		self.flush_text();
 		self.nodes.push(AnsiNode::Esc {
-			intermediates: intermediates.to_vec(),
-			code: byte,
+			intermediates: if intermediates.is_empty() {
+				Vec::new()
+			} else {
+				intermediates.to_vec()
+			},
+			byte,
 		});
 	}
 
 	fn execute(&mut self, byte: u8) {
 		match byte {
 			b'\n' => self.current_text.push('\n'),
-			b'\r' => self.current_text.push('\r'),
+			b'\r' => {},
 			b'\t' => self.current_text.push('\t'),
 			_ => {
 				self.flush_text();
@@ -82,9 +117,14 @@ impl Perform for AstBuilder {
 
 	fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
 		self.flush_text();
-		let params = params.iter().map(|param| param.to_vec()).collect::<Vec<Vec<u8>>>();
+
+		let mut params_vec = Vec::with_capacity(params.len());
+		for param in params {
+			params_vec.push(param.to_vec());
+		}
+
 		self.nodes.push(AnsiNode::Osc {
-			params,
+			params: params_vec,
 			bell_terminated,
 		});
 	}
@@ -98,26 +138,26 @@ mod test {
 	fn parse_single_test() {
 		// 8 colors
 		assert_eq!(
-			AstBuilder::parse("test\x1B[33m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"test\x1B[33m"),
 			vec![
 				AnsiNode::Text(String::from("test")),
 				AnsiNode::Csi {
 					params: vec![33],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 			]
 		);
 
 		// 16 colors
 		assert_eq!(
-			AstBuilder::parse("te\x1B[33;1mst").nodes,
+			TerminalOutputParser::parse_to_nodes(b"te\x1B[33;1mst"),
 			vec![
 				AnsiNode::Text(String::from("te")),
 				AnsiNode::Csi {
 					params: vec![33, 1],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("st")),
 			]
@@ -125,49 +165,49 @@ mod test {
 
 		// 256 colors
 		assert_eq!(
-			AstBuilder::parse("test \x1B[38;5;5m test").nodes,
+			TerminalOutputParser::parse_to_nodes(b"test \x1B[38;5;5m test"),
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
 					params: vec![38, 5, 5],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
 			]
 		);
 		assert_eq!(
-			AstBuilder::parse("test \x1B[38;5;12m test").nodes,
+			TerminalOutputParser::parse_to_nodes(b"test \x1B[38;5;12m test"),
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
 					params: vec![38, 5, 12],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
 			]
 		);
 		assert_eq!(
-			AstBuilder::parse("test \x1B[38;5;150m test").nodes,
+			TerminalOutputParser::parse_to_nodes(b"test \x1B[38;5;150m test"),
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
 					params: vec![38, 5, 150],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
 			]
 		);
 		assert_eq!(
-			AstBuilder::parse("test \x1B[38;5;241m test").nodes,
+			TerminalOutputParser::parse_to_nodes(b"test \x1B[38;5;241m test"),
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
 					params: vec![38, 5, 241],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
 			]
@@ -175,23 +215,23 @@ mod test {
 
 		// 24bit truecolor
 		assert_eq!(
-			AstBuilder::parse("\x1B[38;2;255;50;0mtest").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[38;2;255;50;0mtest"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![38, 2, 255, 50, 0],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("test")),
 			]
 		);
 		assert_eq!(
-			AstBuilder::parse("\x1B[38:2:255:50:0mtest").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[38:2:255:50:0mtest"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![38, 2, 255, 50, 0],
 					intermediates: Vec::new(),
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("test")),
 			]
@@ -201,7 +241,7 @@ mod test {
 	#[test]
 	fn test_control_chars() {
 		assert_eq!(
-			AstBuilder::parse("Hello\nWorld\x07").nodes,
+			TerminalOutputParser::parse_to_nodes(b"Hello\nWorld\x07"),
 			vec![
 				AnsiNode::Text(String::from("Hello\nWorld")),
 				AnsiNode::ControlChar(0x07),
@@ -210,9 +250,9 @@ mod test {
 	}
 
 	#[test]
-	fn test_osc_sequence() {
+	fn osc_sequence_test() {
 		assert_eq!(
-			AstBuilder::parse("\x1B]0;Terminal Title\x07").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B]0;Terminal Title\x07"),
 			vec![AnsiNode::Osc {
 				params: vec![vec![b'0'], b"Terminal Title".to_vec()],
 				bell_terminated: true,
@@ -220,7 +260,7 @@ mod test {
 		);
 
 		assert_eq!(
-			AstBuilder::parse("\x1B]0;Terminal Title\x1B\\").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B]0;Terminal Title\x1B\\"),
 			vec![
 				AnsiNode::Osc {
 					params: vec![vec![b'0'], b"Terminal Title".to_vec()],
@@ -228,13 +268,13 @@ mod test {
 				},
 				AnsiNode::Esc {
 					intermediates: Vec::new(),
-					code: 92
-				}
+					byte: 92,
+				},
 			]
 		);
 
 		assert_eq!(
-			AstBuilder::parse("\x1B]4;1;rgb:ff/00/00\x07").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B]4;1;rgb:ff/00/00\x07"),
 			vec![AnsiNode::Osc {
 				params: vec![vec![b'4'], vec![b'1'], b"rgb:ff/00/00".to_vec()],
 				bell_terminated: true,
@@ -242,7 +282,7 @@ mod test {
 		);
 
 		assert_eq!(
-			AstBuilder::parse("\x1B]8;id=xyz;http://example.com\x07").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B]8;id=xyz;http://example.com\x07"),
 			vec![AnsiNode::Osc {
 				params: vec![vec![b'8'], b"id=xyz".to_vec(), b"http://example.com".to_vec()],
 				bell_terminated: true,
@@ -254,74 +294,74 @@ mod test {
 	fn test_edge_cases() {
 		// Empty parameters - terminals often treat as reset/default
 		assert_eq!(
-			AstBuilder::parse("\x1B[m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[m"),
 			vec![AnsiNode::Csi {
 				params: vec![0],
 				intermediates: vec![],
-				code: 'm'
+				code: 'm',
 			}]
 		);
 
 		// Empty parameter in the middle
 		assert_eq!(
-			AstBuilder::parse("\x1B[1;;3m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[1;;3m"),
 			vec![AnsiNode::Csi {
 				params: vec![1, 0, 3],
 				intermediates: vec![],
-				code: 'm'
+				code: 'm',
 			}]
 		);
 
 		// Incomplete sequence at end
-		assert_eq!(AstBuilder::parse("text\x1B[38").nodes, vec![AnsiNode::Text(String::from("text"))]);
+		assert_eq!(TerminalOutputParser::parse_to_nodes(b"text\x1B[38"), vec![AnsiNode::Text(String::from("text"))]);
 
 		// Multiple sequences without text between
 		assert_eq!(
-			AstBuilder::parse("\x1B[1m\x1B[2m\x1B[3m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[1m\x1B[2m\x1B[3m"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![1],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Csi {
 					params: vec![2],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Csi {
 					params: vec![3],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 			]
 		);
 
 		// Very large parameter values
 		assert_eq!(
-			AstBuilder::parse("\x1B[9999;65535m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[9999;65535m"),
 			vec![AnsiNode::Csi {
 				params: vec![9999, 65535],
 				intermediates: vec![],
-				code: 'm'
+				code: 'm',
 			}]
 		);
 
 		// Mixed text and escapes with no spacing
 		assert_eq!(
-			AstBuilder::parse("a\x1B[31mb\x1B[0mc").nodes,
+			TerminalOutputParser::parse_to_nodes(b"a\x1B[31mb\x1B[0mc"),
 			vec![
 				AnsiNode::Text(String::from("a")),
 				AnsiNode::Csi {
 					params: vec![31],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("b")),
 				AnsiNode::Csi {
 					params: vec![0],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("c")),
 			]
@@ -329,23 +369,23 @@ mod test {
 
 		// CSI with intermediate bytes (like CSI ? sequences)
 		assert_eq!(
-			AstBuilder::parse("\x1B[?25h").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[?25h"),
 			vec![AnsiNode::Csi {
 				params: vec![25],
 				intermediates: vec![b'?'],
-				code: 'h'
+				code: 'h',
 			}]
 		);
 
 		// Control characters mixed with escapes
 		assert_eq!(
-			AstBuilder::parse("\x07\x1B[31m\x08").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x07\x1B[31m\x08"),
 			vec![
 				AnsiNode::ControlChar(0x07),
 				AnsiNode::Csi {
 					params: vec![31],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::ControlChar(0x08),
 			]
@@ -353,10 +393,10 @@ mod test {
 
 		// Malformed escape that looks like ESC but isn't a sequence
 		assert_eq!(
-			AstBuilder::parse("\x1BZ").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1BZ"),
 			vec![AnsiNode::Esc {
 				intermediates: vec![],
-				code: b'Z'
+				byte: b'Z',
 			}]
 		);
 	}
@@ -365,48 +405,48 @@ mod test {
 	fn real_world_sequences_test() {
 		// Git diff colors
 		assert_eq!(
-			AstBuilder::parse("\x1B[1;32m+added line\x1B[m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[1;32m+added line\x1B[m"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![1, 32],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("+added line")),
 				AnsiNode::Csi {
 					params: vec![0],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 			]
 		);
 
 		// Prompt with multiple styles
 		assert_eq!(
-			AstBuilder::parse("\x1B[1;34muser\x1B[0m@\x1B[1;32mhost\x1B[0m:").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[1;34muser\x1B[0m@\x1B[1;32mhost\x1B[0m:"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![1, 34],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("user")),
 				AnsiNode::Csi {
 					params: vec![0],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("@")),
 				AnsiNode::Csi {
 					params: vec![1, 32],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("host")),
 				AnsiNode::Csi {
 					params: vec![0],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from(":")),
 			]
@@ -414,19 +454,234 @@ mod test {
 
 		// 256 color with reset
 		assert_eq!(
-			AstBuilder::parse("\x1B[38;5;196mRED\x1B[0m").nodes,
+			TerminalOutputParser::parse_to_nodes(b"\x1B[38;5;196mRED\x1B[0m"),
 			vec![
 				AnsiNode::Csi {
 					params: vec![38, 5, 196],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
 				AnsiNode::Text(String::from("RED")),
 				AnsiNode::Csi {
 					params: vec![0],
 					intermediates: vec![],
-					code: 'm'
+					code: 'm',
 				},
+			]
+		);
+	}
+
+	#[test]
+	fn utf8_handling_test() {
+		// Basic UTF-8
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes("Hello 世界 🦀".as_bytes()),
+			vec![AnsiNode::Text(String::from("Hello 世界 🦀"))],
+		);
+
+		// UTF-8 mixed with escapes
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes("🎨\x1B[31müß\x1B[0m🔴".as_bytes()),
+			vec![
+				AnsiNode::Text(String::from("🎨")),
+				AnsiNode::Csi {
+					params: vec![31],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from("üß")),
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from("🔴")),
+			]
+		);
+	}
+
+	#[test]
+	fn very_long_input_test() {
+		let long_text = "a".repeat(10_000);
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(&format!("\x1B[31m{}\x1B[0m", long_text).as_bytes()),
+			vec![
+				AnsiNode::Csi {
+					params: vec![31],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from(long_text)),
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn nested_and_overlapping_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(
+				b"\x1B]0;Title\x07\x1B[31mRed\x1B]8;;http://example.com\x07Link\x1B]8;;\x07\x1B[0m"
+			),
+			vec![
+				AnsiNode::Osc {
+					params: vec![vec![b'0'], b"Title".to_vec()],
+					bell_terminated: true,
+				},
+				AnsiNode::Csi {
+					params: vec![31],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from("Red")),
+				AnsiNode::Osc {
+					params: vec![vec![b'8'], vec![], b"http://example.com".to_vec()],
+					bell_terminated: true,
+				},
+				AnsiNode::Text(String::from("Link")),
+				AnsiNode::Osc {
+					params: vec![vec![b'8'], vec![], vec![]],
+					bell_terminated: true,
+				},
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn backspace_behavior_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"abc\x08def"),
+			vec![
+				AnsiNode::Text(String::from("abc")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("def")),
+			]
+		);
+	}
+
+	#[test]
+	fn carriage_return_handling_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"line1\r\nline2\nline3\r"),
+			vec![AnsiNode::Text(String::from("line1\nline2\nline3"))],
+		);
+	}
+
+	#[test]
+	fn invalid_utf8_in_osc_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B]0;Valid\xFFInvalid\x07"),
+			vec![AnsiNode::Osc {
+				params: vec![
+					vec![b'0'],
+					vec![
+						b'V', b'a', b'l', b'i', b'd', 0xFF, b'I', b'n', b'v', b'a', b'l', b'i', b'd',
+					],
+				],
+				bell_terminated: true,
+			},],
+		);
+	}
+
+	#[test]
+	fn zero_width_sequences_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[0m\x1B[0m\x1B[0m"),
+			vec![
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'm',
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn cursor_movement_sequences_test() {
+		// Clear screen and home
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[2J\x1B[H"),
+			vec![
+				AnsiNode::Csi {
+					params: vec![2],
+					intermediates: vec![],
+					code: 'J',
+				},
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'H',
+				},
+			]
+		);
+
+		// Cursor save/restore
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[s\x1B[u"),
+			vec![
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 's',
+				},
+				AnsiNode::Csi {
+					params: vec![0],
+					intermediates: vec![],
+					code: 'u',
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn overstrike_patterns_test() {
+		// Old-style bold (char + backspace + char)
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"H\x08He\x08el\x08ll\x08lo\x08o"),
+			vec![
+				AnsiNode::Text(String::from("H")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("He")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("el")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("ll")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("lo")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("o")),
+			]
+		);
+
+		// Old-style underline (_\bchar)
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"_\x08H_\x08i"),
+			vec![
+				AnsiNode::Text(String::from("_")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("H_")),
+				AnsiNode::ControlChar(0x08),
+				AnsiNode::Text(String::from("i")),
 			]
 		);
 	}
