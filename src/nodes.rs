@@ -52,10 +52,9 @@ impl TerminalOutputParser {
 		}
 	}
 
-	pub fn parse_to_nodes(input: &[u8]) -> Vec<AnsiNode> {
+	fn normalize_crlf(input: &[u8]) -> Vec<u8> {
 		let mut normalized = Vec::with_capacity(input.len());
 		let mut i = 0;
-
 		while i < input.len() {
 			if i + 1 < input.len() && input[i] == b'\r' && input[i + 1] == b'\n' {
 				normalized.push(b'\n');
@@ -65,14 +64,27 @@ impl TerminalOutputParser {
 				i += 1;
 			}
 		}
+		normalized
+	}
 
+	pub fn parse_to_nodes(input: &[u8]) -> Vec<AnsiNode> {
+		let needs_normalization = input.windows(2).any(|w| w == b"\r\n");
+		let normalized_storage;
+		let input_to_parse = if needs_normalization {
+			normalized_storage = Self::normalize_crlf(input);
+			&normalized_storage
+		} else {
+			input
+		};
+
+		let estimated_text_size = input_to_parse.len() * 8 / 10;
 		let mut builder = Self {
 			nodes: Vec::new(),
-			current_text: String::new(),
+			current_text: String::with_capacity(estimated_text_size),
 		};
 		let mut parser = Parser::new();
 
-		parser.advance(&mut builder, &normalized);
+		parser.advance(&mut builder, input_to_parse);
 		builder.flush_text();
 
 		builder.nodes
@@ -91,11 +103,7 @@ impl Perform for TerminalOutputParser {
 
 		self.nodes.push(AnsiNode::Csi {
 			params: params_vec,
-			intermediates: if intermediates.is_empty() {
-				Vec::new()
-			} else {
-				intermediates.to_vec()
-			},
+			intermediates: intermediates.to_vec(),
 			code,
 		});
 	}
@@ -103,11 +111,7 @@ impl Perform for TerminalOutputParser {
 	fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
 		self.flush_text();
 		self.nodes.push(AnsiNode::Esc {
-			intermediates: if intermediates.is_empty() {
-				Vec::new()
-			} else {
-				intermediates.to_vec()
-			},
+			intermediates: intermediates.to_vec(),
 			byte,
 		});
 	}
@@ -715,6 +719,76 @@ mod test {
 				AnsiNode::Text(String::from("H_")),
 				AnsiNode::ControlChar(0x08),
 				AnsiNode::Text(String::from("i")),
+			]
+		);
+	}
+
+	#[test]
+	fn incomplete_utf8_sequence_test() {
+		// Incomplete UTF-8 should be handled gracefully
+		// This is a truncated 3-byte UTF-8 sequence
+		// The parser should handle this without panicking
+		assert!(!TerminalOutputParser::parse_to_nodes(b"Hello \xE2\x9C").is_empty());
+	}
+
+	#[test]
+	fn csi_parameter_count_limit_test() {
+		// Test with way too many parameters
+		let mut params = String::from("\x1B[");
+		for i in 0..100 {
+			params.push_str(&format!("{};", i));
+		}
+		params.push('m');
+
+		let mut result = Vec::with_capacity(32);
+		for i in 0..32 {
+			result.push(vec![i]);
+		}
+
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(params.as_bytes()),
+			vec![AnsiNode::Csi {
+				params: result,
+				intermediates: vec![],
+				code: 'm',
+			}]
+		);
+	}
+
+	#[test]
+	fn csi_parameter_overflow_test() {
+		// Test with parameter values at u16::MAX
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[65535;65535m"),
+			vec![AnsiNode::Csi {
+				params: vec![vec![65535], vec![65535]],
+				intermediates: vec![],
+				code: 'm',
+			}]
+		);
+	}
+
+	#[test]
+	fn zero_width_style_sequences_test() {
+		// Multiple style changes with no text should all be preserved
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[31m\x1B[1m\x1B[4m"),
+			vec![
+				AnsiNode::Csi {
+					params: vec![vec![31]],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Csi {
+					params: vec![vec![1]],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Csi {
+					params: vec![vec![4]],
+					intermediates: vec![],
+					code: 'm',
+				},
 			]
 		);
 	}

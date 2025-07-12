@@ -19,6 +19,38 @@ pub enum UnderlineStyle {
 	Dashed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Font {
+	Default,
+	One,
+	Two,
+	Three,
+	Four,
+	Five,
+	Six,
+	Seven,
+	Eight,
+	Nine,
+}
+
+impl Font {
+	fn from_u8(value: u8) -> Option<Self> {
+		match value {
+			0 => Some(Font::Default),
+			1 => Some(Font::One),
+			2 => Some(Font::Two),
+			3 => Some(Font::Three),
+			4 => Some(Font::Four),
+			5 => Some(Font::Five),
+			6 => Some(Font::Six),
+			7 => Some(Font::Seven),
+			8 => Some(Font::Eight),
+			9 => Some(Font::Nine),
+			_ => None,
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StyleNode {
 	bold: bool,
@@ -29,6 +61,13 @@ pub struct StyleNode {
 	reverse: bool,
 	hidden: bool,
 	strikethrough: bool,
+	rapid_blink: bool,
+	font: Option<Font>,
+	fraktur: bool,
+	proportional_spacing: bool,
+	framed: bool,
+	encircled: bool,
+	overlined: bool,
 	foreground: Option<Color>,
 	background: Option<Color>,
 	fg_bright_from_bold: bool,
@@ -76,9 +115,13 @@ impl StyleNode {
 				[4] => result.underline = Some(UnderlineStyle::Single),
 
 				[5, ..] => result.blink = true,
+				[6, ..] => result.rapid_blink = true,
 				[7, ..] => result.reverse = true,
 				[8, ..] => result.hidden = true,
 				[9, ..] => result.strikethrough = true,
+				[10, ..] => result.font = Font::from_u8(0),
+				[n @ 11..=19, ..] => result.font = Font::from_u8((n - 10) as u8),
+				[20, ..] => result.fraktur = true,
 
 				// Reset individual attributes
 				[21 | 22, ..] => {
@@ -101,6 +144,7 @@ impl StyleNode {
 				[23, ..] => result.italic = false,
 				[24, ..] => result.underline = None,
 				[25, ..] => result.blink = false,
+				[26, ..] => result.proportional_spacing = true,
 				[27, ..] => result.reverse = false,
 				[28, ..] => result.hidden = false,
 				[29, ..] => result.strikethrough = false,
@@ -154,6 +198,17 @@ impl StyleNode {
 
 				// Default background
 				[49, ..] => result.background = None,
+
+				// Legacy styles
+				[50, ..] => result.proportional_spacing = false,
+				[51, ..] => result.framed = true,
+				[52, ..] => result.encircled = true,
+				[53, ..] => result.overlined = true,
+				[54, ..] => {
+					result.framed = false;
+					result.encircled = false;
+				},
+				[55, ..] => result.overlined = false,
 
 				// Bright foreground colors (direct)
 				[n @ 90..=97, ..] => {
@@ -442,6 +497,51 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![91], vec![1], vec![22]]),
 			StyleNode {
 				foreground: Some(Color::Bright(1)),
+				..StyleNode::default()
+			}
+		);
+	}
+
+	#[test]
+	fn bold_after_256_color_test() {
+		// Bold shouldn't affect 256 colors
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![38, 5, 196], vec![1]]),
+			StyleNode {
+				bold: true,
+				foreground: Some(Color::Palette(196)),
+				..StyleNode::default()
+			}
+		);
+	}
+
+	#[test]
+	fn bold_after_rgb_color_test() {
+		// Bold shouldn't affect RGB colors
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![38, 2, 255, 0, 0], vec![1]]),
+			StyleNode {
+				bold: true,
+				foreground: Some(Color::Rgb { r: 255, g: 0, b: 0 }),
+				..StyleNode::default()
+			}
+		);
+	}
+
+	#[test]
+	fn sgr_22_with_bold_and_dim_test() {
+		// SGR 22 should reset both bold and dim
+		assert_eq!(StyleNode::from_ansi_node(&[vec![1], vec![2], vec![22]]), StyleNode::default());
+	}
+
+	#[test]
+	fn sgr_22_preserves_other_attributes_test() {
+		// SGR 22 should only affect bold/dim
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![1], vec![3], vec![4], vec![22]]),
+			StyleNode {
+				italic: true,
+				underline: Some(UnderlineStyle::Single),
 				..StyleNode::default()
 			}
 		);
