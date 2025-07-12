@@ -1,7 +1,8 @@
 use std::io::{Read, stdin};
 
-mod parser;
+mod nodes;
 mod shellvetica;
+mod styles;
 
 use crate::shellvetica::Shellvetica;
 

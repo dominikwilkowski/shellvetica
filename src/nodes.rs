@@ -4,7 +4,7 @@ use vte::{Parser, Perform};
 pub enum AnsiNode {
 	Text(String),
 	Csi {
-		params: Vec<u16>,
+		params: Vec<Vec<u16>>,
 		intermediates: Vec<u8>,
 		code: char,
 	},
@@ -53,13 +53,26 @@ impl TerminalOutputParser {
 	}
 
 	pub fn parse_to_nodes(input: &[u8]) -> Vec<AnsiNode> {
+		let mut normalized = Vec::with_capacity(input.len());
+		let mut i = 0;
+
+		while i < input.len() {
+			if i + 1 < input.len() && input[i] == b'\r' && input[i + 1] == b'\n' {
+				normalized.push(b'\n');
+				i += 2;
+			} else {
+				normalized.push(input[i]);
+				i += 1;
+			}
+		}
+
 		let mut builder = Self {
 			nodes: Vec::new(),
 			current_text: String::new(),
 		};
 		let mut parser = Parser::new();
 
-		parser.advance(&mut builder, input);
+		parser.advance(&mut builder, &normalized);
 		builder.flush_text();
 
 		builder.nodes
@@ -74,11 +87,7 @@ impl Perform for TerminalOutputParser {
 	fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, code: char) {
 		self.flush_text();
 
-		let capacity: usize = params.iter().map(|p| p.len()).sum();
-		let mut params_vec = Vec::with_capacity(capacity);
-		for subparams in params {
-			params_vec.extend(subparams.iter().copied());
-		}
+		let params_vec = params.iter().map(|subparams| subparams.to_vec()).collect::<Vec<Vec<u16>>>();
 
 		self.nodes.push(AnsiNode::Csi {
 			params: params_vec,
@@ -106,7 +115,7 @@ impl Perform for TerminalOutputParser {
 	fn execute(&mut self, byte: u8) {
 		match byte {
 			b'\n' => self.current_text.push('\n'),
-			b'\r' => {},
+			b'\r' => self.current_text.push('\r'),
 			b'\t' => self.current_text.push('\t'),
 			_ => {
 				self.flush_text();
@@ -136,14 +145,38 @@ mod test {
 
 	#[test]
 	fn parse_single_test() {
+		// styles
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[4m test "),
+			vec![
+				AnsiNode::Csi {
+					params: vec![vec![4]],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from(" test ")),
+			]
+		);
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\x1B[4:2m test "),
+			vec![
+				AnsiNode::Csi {
+					params: vec![vec![4, 2]],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from(" test ")),
+			]
+		);
+
 		// 8 colors
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"test\x1B[33m"),
 			vec![
 				AnsiNode::Text(String::from("test")),
 				AnsiNode::Csi {
-					params: vec![33],
-					intermediates: Vec::new(),
+					params: vec![vec![33]],
+					intermediates: vec![],
 					code: 'm',
 				},
 			]
@@ -155,8 +188,8 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("te")),
 				AnsiNode::Csi {
-					params: vec![33, 1],
-					intermediates: Vec::new(),
+					params: vec![vec![33], vec![1]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("st")),
@@ -169,8 +202,8 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
-					params: vec![38, 5, 5],
-					intermediates: Vec::new(),
+					params: vec![vec![38], vec![5], vec![5]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
@@ -181,8 +214,8 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
-					params: vec![38, 5, 12],
-					intermediates: Vec::new(),
+					params: vec![vec![38], vec![5], vec![12]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
@@ -193,8 +226,8 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
-					params: vec![38, 5, 150],
-					intermediates: Vec::new(),
+					params: vec![vec![38], vec![5], vec![150]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
@@ -205,8 +238,8 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("test ")),
 				AnsiNode::Csi {
-					params: vec![38, 5, 241],
-					intermediates: Vec::new(),
+					params: vec![vec![38], vec![5], vec![241]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from(" test")),
@@ -218,8 +251,8 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[38;2;255;50;0mtest"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![38, 2, 255, 50, 0],
-					intermediates: Vec::new(),
+					params: vec![vec![38], vec![2], vec![255], vec![50], vec![0]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("test")),
@@ -229,8 +262,8 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[38:2:255:50:0mtest"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![38, 2, 255, 50, 0],
-					intermediates: Vec::new(),
+					params: vec![vec![38, 2, 255, 50, 0]],
+					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("test")),
@@ -267,7 +300,7 @@ mod test {
 					bell_terminated: false,
 				},
 				AnsiNode::Esc {
-					intermediates: Vec::new(),
+					intermediates: vec![],
 					byte: 92,
 				},
 			]
@@ -296,7 +329,7 @@ mod test {
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"\x1B[m"),
 			vec![AnsiNode::Csi {
-				params: vec![0],
+				params: vec![vec![0]],
 				intermediates: vec![],
 				code: 'm',
 			}]
@@ -306,7 +339,7 @@ mod test {
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"\x1B[1;;3m"),
 			vec![AnsiNode::Csi {
-				params: vec![1, 0, 3],
+				params: vec![vec![1], vec![0], vec![3]],
 				intermediates: vec![],
 				code: 'm',
 			}]
@@ -320,17 +353,17 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[1m\x1B[2m\x1B[3m"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![1],
+					params: vec![vec![1]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Csi {
-					params: vec![2],
+					params: vec![vec![2]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Csi {
-					params: vec![3],
+					params: vec![vec![3]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -341,7 +374,7 @@ mod test {
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"\x1B[9999;65535m"),
 			vec![AnsiNode::Csi {
-				params: vec![9999, 65535],
+				params: vec![vec![9999], vec![65535]],
 				intermediates: vec![],
 				code: 'm',
 			}]
@@ -353,13 +386,13 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("a")),
 				AnsiNode::Csi {
-					params: vec![31],
+					params: vec![vec![31]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("b")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -371,7 +404,7 @@ mod test {
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"\x1B[?25h"),
 			vec![AnsiNode::Csi {
-				params: vec![25],
+				params: vec![vec![25]],
 				intermediates: vec![b'?'],
 				code: 'h',
 			}]
@@ -383,7 +416,7 @@ mod test {
 			vec![
 				AnsiNode::ControlChar(0x07),
 				AnsiNode::Csi {
-					params: vec![31],
+					params: vec![vec![31]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -408,13 +441,13 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[1;32m+added line\x1B[m"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![1, 32],
+					params: vec![vec![1], vec![32]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("+added line")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -426,25 +459,25 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[1;34muser\x1B[0m@\x1B[1;32mhost\x1B[0m:"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![1, 34],
+					params: vec![vec![1], vec![34]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("user")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("@")),
 				AnsiNode::Csi {
-					params: vec![1, 32],
+					params: vec![vec![1], vec![32]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("host")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -457,13 +490,13 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[38;5;196mRED\x1B[0m"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![38, 5, 196],
+					params: vec![vec![38], vec![5], vec![196]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("RED")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -485,13 +518,13 @@ mod test {
 			vec![
 				AnsiNode::Text(String::from("🎨")),
 				AnsiNode::Csi {
-					params: vec![31],
+					params: vec![vec![31]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from("üß")),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -507,13 +540,13 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(&format!("\x1B[31m{}\x1B[0m", long_text).as_bytes()),
 			vec![
 				AnsiNode::Csi {
-					params: vec![31],
+					params: vec![vec![31]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Text(String::from(long_text)),
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -533,7 +566,7 @@ mod test {
 					bell_terminated: true,
 				},
 				AnsiNode::Csi {
-					params: vec![31],
+					params: vec![vec![31]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -548,7 +581,7 @@ mod test {
 					bell_terminated: true,
 				},
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -572,7 +605,7 @@ mod test {
 	fn carriage_return_handling_test() {
 		assert_eq!(
 			TerminalOutputParser::parse_to_nodes(b"line1\r\nline2\nline3\r"),
-			vec![AnsiNode::Text(String::from("line1\nline2\nline3"))],
+			vec![AnsiNode::Text(String::from("line1\nline2\nline3\r"))],
 		);
 	}
 
@@ -598,17 +631,17 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[0m\x1B[0m\x1B[0m"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'm',
 				},
@@ -623,12 +656,12 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[2J\x1B[H"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![2],
+					params: vec![vec![2]],
 					intermediates: vec![],
 					code: 'J',
 				},
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'H',
 				},
@@ -640,12 +673,12 @@ mod test {
 			TerminalOutputParser::parse_to_nodes(b"\x1B[s\x1B[u"),
 			vec![
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 's',
 				},
 				AnsiNode::Csi {
-					params: vec![0],
+					params: vec![vec![0]],
 					intermediates: vec![],
 					code: 'u',
 				},
