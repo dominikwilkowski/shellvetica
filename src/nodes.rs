@@ -33,7 +33,23 @@ impl AnsiNode {
 	pub fn is_cursor_movement(&self) -> bool {
 		match self {
 			AnsiNode::Csi { code, .. } => {
-				matches!(code, 'H' | 'J' | 'K' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'S' | 'T' | 'f' | 's' | 'u')
+				matches!(
+					code,
+					'A'
+						| 'B' | 'C'
+						| 'D' | 'd'
+						| 'E' | 'F'
+						| 'f' | 'G'
+						| 'H' | 'J'
+						| 'K' | 'L'
+						| 'M' | 'P'
+						| 'S' | 's'
+						| 'T' | 'u'
+						| 'X' | '@'
+				)
+			},
+			AnsiNode::Esc { byte, .. } => {
+				matches!(byte, b'7' | b'8' | b'M' | b'D' | b'E')
 			},
 			_ => false,
 		}
@@ -608,8 +624,8 @@ mod test {
 	#[test]
 	fn carriage_return_handling_test() {
 		assert_eq!(
-			TerminalOutputParser::parse_to_nodes(b"line1\r\nline2\nline3\r"),
-			vec![AnsiNode::Text(String::from("line1\nline2\nline3\r"))],
+			TerminalOutputParser::parse_to_nodes(b"line1\r\nline2\tline3\r"),
+			vec![AnsiNode::Text(String::from("line1\nline2\tline3\r"))],
 		);
 	}
 
@@ -728,7 +744,23 @@ mod test {
 		// Incomplete UTF-8 should be handled gracefully
 		// This is a truncated 3-byte UTF-8 sequence
 		// The parser should handle this without panicking
-		assert!(!TerminalOutputParser::parse_to_nodes(b"Hello \xE2\x9C").is_empty());
+		assert_eq!(TerminalOutputParser::parse_to_nodes(b"Hello \xE2\x9C"), vec![AnsiNode::Text(String::from("Hello ")),]);
+	}
+
+	#[test]
+	fn invalid_utf8_mixed_with_ansi_test() {
+		assert_eq!(
+			TerminalOutputParser::parse_to_nodes(b"\xFF\xFE\x1B[31mRed"),
+			vec![
+				AnsiNode::Text(String::from("��")),
+				AnsiNode::Csi {
+					params: vec![vec![31]],
+					intermediates: vec![],
+					code: 'm',
+				},
+				AnsiNode::Text(String::from("Red")),
+			]
+		);
 	}
 
 	#[test]

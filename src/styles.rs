@@ -1,9 +1,37 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EightBitColor {
+	Zero,
+	One,
+	Two,
+	Three,
+	Four,
+	Five,
+	Six,
+	Seven,
+}
+
+impl EightBitColor {
+	pub fn from_u8(value: u8) -> Self {
+		match value {
+			0 => EightBitColor::Zero,
+			1 => EightBitColor::One,
+			2 => EightBitColor::Two,
+			3 => EightBitColor::Three,
+			4 => EightBitColor::Four,
+			5 => EightBitColor::Five,
+			6 => EightBitColor::Six,
+			7 => EightBitColor::Seven,
+			_ => EightBitColor::Zero,
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Color {
 	/// Standard 8 colors (30-37, 40-47)
-	Standard(u8),
+	Standard(EightBitColor),
 	/// Bright variants of standard colors (with bright)
-	Bright(u8),
+	Bright(EightBitColor),
 	/// 256-color palette
 	Palette(u8),
 	/// True color RGB
@@ -21,7 +49,6 @@ pub enum UnderlineStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Font {
-	Default,
 	One,
 	Two,
 	Three,
@@ -36,7 +63,7 @@ pub enum Font {
 impl Font {
 	fn from_u8(value: u8) -> Option<Self> {
 		match value {
-			0 => Some(Font::Default),
+			0 => None,
 			1 => Some(Font::One),
 			2 => Some(Font::Two),
 			3 => Some(Font::Three),
@@ -57,6 +84,9 @@ pub struct StyleNode {
 	dim: bool,
 	italic: bool,
 	underline: Option<UnderlineStyle>,
+	underline_color: Option<Color>,
+	subscript: bool,
+	superscript: bool,
 	blink: bool,
 	reverse: bool,
 	hidden: bool,
@@ -103,7 +133,7 @@ impl StyleNode {
 				// Underline with style (4:2 becomes [4, 2])
 				[4, style, ..] => {
 					result.underline = match style {
-						0 => None, // Actually this should set underline to None
+						0 => None,
 						1 => Some(UnderlineStyle::Single),
 						2 => Some(UnderlineStyle::Double),
 						3 => Some(UnderlineStyle::Curly),
@@ -143,7 +173,10 @@ impl StyleNode {
 				},
 				[23, ..] => result.italic = false,
 				[24, ..] => result.underline = None,
-				[25, ..] => result.blink = false,
+				[25, ..] => {
+					result.blink = false;
+					result.rapid_blink = false;
+				},
 				[26, ..] => result.proportional_spacing = true,
 				[27, ..] => result.reverse = false,
 				[28, ..] => result.hidden = false,
@@ -153,9 +186,10 @@ impl StyleNode {
 				[n @ 30..=37, ..] => {
 					let color_index = (n - 30) as u8;
 					result.foreground = Some(if result.bold {
-						Color::Bright(color_index)
+						result.fg_bright_from_bold = true;
+						Color::Bright(EightBitColor::from_u8(color_index))
 					} else {
-						Color::Standard(color_index)
+						Color::Standard(EightBitColor::from_u8(color_index))
 					});
 				},
 
@@ -178,9 +212,10 @@ impl StyleNode {
 				[n @ 40..=47, ..] => {
 					let color_index = (n - 40) as u8;
 					result.background = Some(if result.bold {
-						Color::Bright(color_index)
+						result.bg_bright_from_bold = true;
+						Color::Bright(EightBitColor::from_u8(color_index))
 					} else {
-						Color::Standard(color_index)
+						Color::Standard(EightBitColor::from_u8(color_index))
 					});
 				},
 
@@ -210,14 +245,41 @@ impl StyleNode {
 				},
 				[55, ..] => result.overlined = false,
 
+				// Extended underline colors
+				[58, 5, palette, ..] => {
+					result.underline_color = Some(Color::Palette(*palette as u8));
+				},
+				[58, 2, r, g, b, ..] => {
+					result.underline_color = Some(Color::Rgb {
+						r: (*r).min(255) as u8,
+						g: (*g).min(255) as u8,
+						b: (*b).min(255) as u8,
+					});
+				},
+				[59, ..] => result.underline_color = None,
+
+				// Sub/superscript
+				[73, ..] => {
+					result.superscript = true;
+					result.subscript = false;
+				},
+				[74, ..] => {
+					result.subscript = true;
+					result.superscript = false;
+				},
+				[75, ..] => {
+					result.subscript = false;
+					result.superscript = false;
+				},
+
 				// Bright foreground colors (direct)
 				[n @ 90..=97, ..] => {
-					result.foreground = Some(Color::Bright((n - 90) as u8));
+					result.foreground = Some(Color::Bright(EightBitColor::from_u8((n - 90) as u8)));
 				},
 
 				// Bright background colors (direct)
 				[n @ 100..=107, ..] => {
-					result.background = Some(Color::Bright((n - 100) as u8));
+					result.background = Some(Color::Bright(EightBitColor::from_u8((n - 100) as u8)));
 				},
 
 				_ => {}, // Unknown SGR code, ignore
@@ -266,7 +328,7 @@ mod test {
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![4, 0], vec![31]]),
 			StyleNode {
-				foreground: Some(Color::Standard(1)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(1))),
 				..StyleNode::default()
 			}
 		);
@@ -340,56 +402,56 @@ mod test {
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![30]]),
 			StyleNode {
-				foreground: Some(Color::Standard(0)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(0))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![31]]),
 			StyleNode {
-				foreground: Some(Color::Standard(1)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(1))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![32]]),
 			StyleNode {
-				foreground: Some(Color::Standard(2)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(2))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![33]]),
 			StyleNode {
-				foreground: Some(Color::Standard(3)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(3))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![34]]),
 			StyleNode {
-				foreground: Some(Color::Standard(4)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(4))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![35]]),
 			StyleNode {
-				foreground: Some(Color::Standard(5)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(5))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![36]]),
 			StyleNode {
-				foreground: Some(Color::Standard(6)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(6))),
 				..StyleNode::default()
 			},
 		);
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![37]]),
 			StyleNode {
-				foreground: Some(Color::Standard(7)),
+				foreground: Some(Color::Standard(EightBitColor::from_u8(7))),
 				..StyleNode::default()
 			},
 		);
@@ -401,7 +463,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![30], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(0)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(0))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -410,7 +472,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![31], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(1)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -419,7 +481,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![32], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(2)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(2))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -428,7 +490,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![33], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(3)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(3))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -437,7 +499,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![34], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(4)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(4))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -446,7 +508,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![35], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(5)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(5))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -455,7 +517,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![36], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(6)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(6))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -464,7 +526,7 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![37], vec![1]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(7)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(7))),
 				fg_bright_from_bold: true,
 				..StyleNode::default()
 			},
@@ -478,7 +540,19 @@ mod test {
 			StyleNode::from_ansi_node(&[vec![1], vec![31]]),
 			StyleNode {
 				bold: true,
-				foreground: Some(Color::Bright(1)),
+				fg_bright_from_bold: true,
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
+				..StyleNode::default()
+			}
+		);
+
+		// Color with bold modifier should give bright
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![31], vec![1]]),
+			StyleNode {
+				bold: true,
+				fg_bright_from_bold: true,
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
 				..StyleNode::default()
 			}
 		);
@@ -487,7 +561,7 @@ mod test {
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![91]]),
 			StyleNode {
-				foreground: Some(Color::Bright(1)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
 				..StyleNode::default()
 			}
 		);
@@ -496,7 +570,28 @@ mod test {
 		assert_eq!(
 			StyleNode::from_ansi_node(&[vec![91], vec![1], vec![22]]),
 			StyleNode {
-				foreground: Some(Color::Bright(1)),
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
+				..StyleNode::default()
+			}
+		);
+	}
+
+	#[test]
+	fn bold_then_color_then_reset_test() {
+		// Apply bold, then color, then remove bold - color should downgrade
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![1], vec![31], vec![22]]),
+			StyleNode {
+				foreground: Some(Color::Standard(EightBitColor::from_u8(1))),
+				..StyleNode::default()
+			}
+		);
+
+		// Compare with explicit bright color which should NOT downgrade
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![91], vec![22]]),
+			StyleNode {
+				foreground: Some(Color::Bright(EightBitColor::from_u8(1))),
 				..StyleNode::default()
 			}
 		);
@@ -545,5 +640,63 @@ mod test {
 				..StyleNode::default()
 			}
 		);
+	}
+
+	#[test]
+	fn underline_color_test() {
+		// 256 color underline
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![58, 5, 196]]),
+			StyleNode {
+				underline_color: Some(Color::Palette(196)),
+				..StyleNode::default()
+			}
+		);
+
+		// RGB underline
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![58, 2, 255, 0, 128]]),
+			StyleNode {
+				underline_color: Some(Color::Rgb { r: 255, g: 0, b: 128 }),
+				..StyleNode::default()
+			}
+		);
+
+		// Reset underline color
+		assert_eq!(StyleNode::from_ansi_node(&[vec![58, 5, 196], vec![59]]), StyleNode::default());
+	}
+
+	#[test]
+	fn subscript_superscript_test() {
+		// Superscript
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![73]]),
+			StyleNode {
+				superscript: true,
+				..StyleNode::default()
+			}
+		);
+
+		// Subscript
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![74]]),
+			StyleNode {
+				subscript: true,
+				..StyleNode::default()
+			}
+		);
+
+		// Superscript overrides subscript
+		assert_eq!(
+			StyleNode::from_ansi_node(&[vec![74], vec![73]]),
+			StyleNode {
+				superscript: true,
+				subscript: false,
+				..StyleNode::default()
+			}
+		);
+
+		// Reset both
+		assert_eq!(StyleNode::from_ansi_node(&[vec![73], vec![75]]), StyleNode::default());
 	}
 }
