@@ -1,27 +1,27 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EightBitColor {
-	Zero,
-	One,
-	Two,
-	Three,
-	Four,
-	Five,
-	Six,
-	Seven,
+	Black,
+	Red,
+	Green,
+	Yellow,
+	Blue,
+	Magenta,
+	Cyan,
+	White,
 }
 
 impl EightBitColor {
 	pub fn from_u8(value: u8) -> Self {
 		match value {
-			0 => EightBitColor::Zero,
-			1 => EightBitColor::One,
-			2 => EightBitColor::Two,
-			3 => EightBitColor::Three,
-			4 => EightBitColor::Four,
-			5 => EightBitColor::Five,
-			6 => EightBitColor::Six,
-			7 => EightBitColor::Seven,
-			_ => EightBitColor::Zero,
+			0 => EightBitColor::Black,
+			1 => EightBitColor::Red,
+			2 => EightBitColor::Green,
+			3 => EightBitColor::Yellow,
+			4 => EightBitColor::Blue,
+			5 => EightBitColor::Magenta,
+			6 => EightBitColor::Cyan,
+			7 => EightBitColor::White,
+			_ => EightBitColor::Black,
 		}
 	}
 }
@@ -287,6 +287,66 @@ impl StyleNode {
 		}
 
 		result
+	}
+
+	pub fn to_css(&self) -> String {
+		let color = match self.foreground {
+			None => String::from(""),
+			Some(Color::Standard(color)) => {
+				let color = match color {
+					EightBitColor::Black => "#000000",
+					EightBitColor::Red => "#cd0000",
+					EightBitColor::Green => "#00cd00",
+					EightBitColor::Yellow => "#cdcd00",
+					EightBitColor::Blue => "#0000ee",
+					EightBitColor::Magenta => "#cd00cd",
+					EightBitColor::Cyan => "#00cdcd",
+					EightBitColor::White => "#e5e5e5",
+				}
+				.to_string();
+				format!("color:{color};")
+			},
+			Some(Color::Bright(color)) => {
+				let color = match color {
+					EightBitColor::Black => "#7f7f7f",
+					EightBitColor::Red => "#ff0000",
+					EightBitColor::Green => "#00ff00",
+					EightBitColor::Yellow => "#ffff00",
+					EightBitColor::Blue => "#5c5cff",
+					EightBitColor::Magenta => "#ff00ff",
+					EightBitColor::Cyan => "#00ffff",
+					EightBitColor::White => "#ffffff",
+				}
+				.to_string();
+				format!("color:{color};")
+			},
+			Some(Color::Palette(color)) => {
+				// TODO
+				// match color {
+				// 	0..=15 => {
+				// 		// Standard + bright colors
+				// 		// ... implement standard 16 colors
+				// 	},
+				// 	16..=231 => {
+				// 		// 6x6x6 color cube
+				// 		let n = n - 16;
+				// 		let r = (n / 36) * 51;
+				// 		let g = ((n % 36) / 6) * 51;
+				// 		let b = (n % 6) * 51;
+				// 		(r, g, b)
+				// 	},
+				// 	232..=255 => {
+				// 		// Grayscale
+				// 		let gray = 8 + (n - 232) * 10;
+				// 		(gray, gray, gray)
+				// 	},
+				// }
+				format!("color:#{color};")
+			},
+			Some(Color::Rgb { r, g, b }) => format!("color:#{r:02x}{g:02x}{b:02x};"),
+		};
+
+		format!("<span style=\"{color}\">")
 	}
 }
 
