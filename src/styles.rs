@@ -105,6 +105,8 @@ pub struct StyleNode {
 }
 
 impl StyleNode {
+	const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
 	pub fn from_ansi_node(params: &[Vec<u16>]) -> Self {
 		let mut result = Self::default();
 
@@ -289,64 +291,95 @@ impl StyleNode {
 		result
 	}
 
-	pub fn to_css(&self) -> String {
-		let color = match self.foreground {
-			None => String::from(""),
-			Some(Color::Standard(color)) => {
-				let color = match color {
-					EightBitColor::Black => "#000000",
-					EightBitColor::Red => "#cd0000",
-					EightBitColor::Green => "#00cd00",
-					EightBitColor::Yellow => "#cdcd00",
-					EightBitColor::Blue => "#0000ee",
-					EightBitColor::Magenta => "#cd00cd",
-					EightBitColor::Cyan => "#00cdcd",
-					EightBitColor::White => "#e5e5e5",
-				}
-				.to_string();
-				format!("color:{color};")
-			},
-			Some(Color::Bright(color)) => {
-				let color = match color {
-					EightBitColor::Black => "#7f7f7f",
-					EightBitColor::Red => "#ff0000",
-					EightBitColor::Green => "#00ff00",
-					EightBitColor::Yellow => "#ffff00",
-					EightBitColor::Blue => "#5c5cff",
-					EightBitColor::Magenta => "#ff00ff",
-					EightBitColor::Cyan => "#00ffff",
-					EightBitColor::White => "#ffffff",
-				}
-				.to_string();
-				format!("color:{color};")
-			},
-			Some(Color::Palette(color)) => {
-				// TODO
-				// match color {
-				// 	0..=15 => {
-				// 		// Standard + bright colors
-				// 		// ... implement standard 16 colors
-				// 	},
-				// 	16..=231 => {
-				// 		// 6x6x6 color cube
-				// 		let n = n - 16;
-				// 		let r = (n / 36) * 51;
-				// 		let g = ((n % 36) / 6) * 51;
-				// 		let b = (n % 6) * 51;
-				// 		(r, g, b)
-				// 	},
-				// 	232..=255 => {
-				// 		// Grayscale
-				// 		let gray = 8 + (n - 232) * 10;
-				// 		(gray, gray, gray)
-				// 	},
-				// }
-				format!("color:#{color};")
-			},
-			Some(Color::Rgb { r, g, b }) => format!("color:#{r:02x}{g:02x}{b:02x};"),
-		};
+	fn standard_color_to_hex(color: &EightBitColor) -> &'static str {
+		match color {
+			EightBitColor::Black => "#000",
+			EightBitColor::Red => "#cd0000",
+			EightBitColor::Green => "#00cd00",
+			EightBitColor::Yellow => "#cdcd00",
+			EightBitColor::Blue => "#00e",
+			EightBitColor::Magenta => "#cd00cd",
+			EightBitColor::Cyan => "#00cdcd",
+			EightBitColor::White => "#e5e5e5",
+		}
+	}
 
-		format!("<span style=\"{color}\">")
+	fn bright_color_to_hex(color: &EightBitColor) -> &'static str {
+		match color {
+			EightBitColor::Black => "#7f7f7f",
+			EightBitColor::Red => "#f00",
+			EightBitColor::Green => "#0f0",
+			EightBitColor::Yellow => "#ff0",
+			EightBitColor::Blue => "#5c5cff",
+			EightBitColor::Magenta => "#f0f",
+			EightBitColor::Cyan => "#0ff",
+			EightBitColor::White => "#fff",
+		}
+	}
+
+	pub fn to_html(&self) -> String {
+		let mut html = String::with_capacity(200);
+
+		html.push_str("<span style=\"");
+
+		if let Some(color) = &self.foreground {
+			html.push_str("color:");
+
+			match color {
+				Color::Standard(color) => {
+					html.push_str(Self::standard_color_to_hex(&color));
+				},
+				Color::Bright(color) => {
+					html.push_str(Self::bright_color_to_hex(&color));
+				},
+				Color::Palette(color) => match color {
+					0..=7 => html.push_str(Self::standard_color_to_hex(&EightBitColor::from_u8(*color))),
+					8..=15 => html.push_str(Self::bright_color_to_hex(&EightBitColor::from_u8(color - 8))),
+					16..=231 => {
+						let n = color - 16;
+						let r = (n / 36) * 51;
+						let g = ((n % 36) / 6) * 51;
+						let b = (n % 6) * 51;
+						Self::push_hex_rgb(&mut html, r, g, b);
+					},
+					232..=255 => {
+						let gray = 8 + (color - 232) * 10;
+						Self::push_hex_rgb(&mut html, gray, gray, gray);
+					},
+				},
+				Color::Rgb { r, g, b } => {
+					Self::push_hex_rgb(&mut html, *r, *g, *b);
+				},
+			};
+
+			html.push(';');
+		}
+
+		html.push_str("\">");
+		html
+	}
+
+	#[inline]
+	fn push_hex(s: &mut String, byte: u8) {
+		s.push(Self::HEX_CHARS[(byte >> 4) as usize] as char);
+		s.push(Self::HEX_CHARS[(byte & 0xf) as usize] as char);
+	}
+
+	#[inline]
+	fn push_hex_rgb(s: &mut String, r: u8, g: u8, b: u8) {
+		s.push('#');
+
+		if r & 0x0F == r >> 4 && g & 0x0F == g >> 4 && b & 0x0F == b >> 4 {
+			// Can use shorthand #RGB
+			s.push(Self::HEX_CHARS[(r & 0x0F) as usize] as char);
+			s.push(Self::HEX_CHARS[(g & 0x0F) as usize] as char);
+			s.push(Self::HEX_CHARS[(b & 0x0F) as usize] as char);
+		} else {
+			// Must use full #RRGGBB
+			Self::push_hex(s, r);
+			Self::push_hex(s, g);
+			Self::push_hex(s, b);
+		}
 	}
 }
 
@@ -758,5 +791,80 @@ mod test {
 
 		// Reset both
 		assert_eq!(StyleNode::from_ansi_node(&[vec![73], vec![75]]), StyleNode::default());
+	}
+
+	#[test]
+	fn to_html_test() {
+		// Standard colors
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Standard(EightBitColor::Black)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#000;\">")
+		);
+
+		// Bright colors
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Bright(EightBitColor::Blue)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#5c5cff;\">")
+		);
+
+		// Palette colors
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Palette(5)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#cd00cd;\">")
+		);
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Palette(12)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#5c5cff;\">")
+		);
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Palette(190)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#cf0;\">")
+		);
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Palette(245)),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#8a8a8a;\">")
+		);
+
+		// RGB colors
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Rgb { r: 255, g: 0, b: 128 }),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#ff0080;\">")
+		);
+		assert_eq!(
+			StyleNode {
+				foreground: Some(Color::Rgb { r: 17, g: 34, b: 51 }),
+				..StyleNode::default()
+			}
+			.to_html(),
+			String::from("<span style=\"color:#123;\">")
+		);
 	}
 }
