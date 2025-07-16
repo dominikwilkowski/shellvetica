@@ -317,41 +317,91 @@ impl StyleNode {
 		}
 	}
 
+	fn append_color(html: &mut String, color: &Color) {
+		match color {
+			Color::Standard(color) => {
+				html.push_str(Self::standard_color_to_hex(&color));
+			},
+			Color::Bright(color) => {
+				html.push_str(Self::bright_color_to_hex(&color));
+			},
+			Color::Palette(color) => match color {
+				0..=7 => html.push_str(Self::standard_color_to_hex(&EightBitColor::from_u8(*color))),
+				8..=15 => html.push_str(Self::bright_color_to_hex(&EightBitColor::from_u8(color - 8))),
+				16..=231 => {
+					let n = color - 16;
+					let r = (n / 36) * 51;
+					let g = ((n % 36) / 6) * 51;
+					let b = (n % 6) * 51;
+					Self::push_hex_rgb(html, r, g, b);
+				},
+				232..=255 => {
+					let gray = 8 + (color - 232) * 10;
+					Self::push_hex_rgb(html, gray, gray, gray);
+				},
+			},
+			Color::Rgb { r, g, b } => {
+				Self::push_hex_rgb(html, *r, *g, *b);
+			},
+		};
+	}
+
 	pub fn to_html(&self) -> String {
 		let mut html = String::with_capacity(200);
 
 		html.push_str("<span style=\"");
 
-		if let Some(color) = &self.foreground {
+		if self.bold {
+			html.push_str("font-weight:bold;");
+		}
+
+		if self.dim {
+			html.push_str("opacity:.5;");
+		}
+
+		if self.italic {
+			html.push_str("font-style:italic;");
+		}
+
+		if let Some(underline) = self.underline {
+			match underline {
+				UnderlineStyle::Single => html.push_str("text-decoration:underline;"),
+				UnderlineStyle::Double => html.push_str("text-decoration:underline double;"),
+				UnderlineStyle::Curly => html.push_str("text-decoration:underline wavy;"),
+				UnderlineStyle::Dotted => html.push_str("text-decoration:underline dotted;"),
+				UnderlineStyle::Dashed => html.push_str("text-decoration:underline dashed;"),
+			}
+		}
+
+		if let Some(underline_color) = self.underline_color {
+			html.push_str("text-decoration-color:");
+			Self::append_color(&mut html, &underline_color);
+			html.push(';');
+		}
+
+		// subscript
+		// superscript
+		// blink
+		// reverse
+		// hidden
+		// strikethrough
+		// rapid_blink
+		// font
+		// fraktur
+		// proportional_spacing
+		// framed
+		// encircled
+		// overlined
+
+		if let Some(color) = self.foreground {
 			html.push_str("color:");
+			Self::append_color(&mut html, &color);
+			html.push(';');
+		}
 
-			match color {
-				Color::Standard(color) => {
-					html.push_str(Self::standard_color_to_hex(&color));
-				},
-				Color::Bright(color) => {
-					html.push_str(Self::bright_color_to_hex(&color));
-				},
-				Color::Palette(color) => match color {
-					0..=7 => html.push_str(Self::standard_color_to_hex(&EightBitColor::from_u8(*color))),
-					8..=15 => html.push_str(Self::bright_color_to_hex(&EightBitColor::from_u8(color - 8))),
-					16..=231 => {
-						let n = color - 16;
-						let r = (n / 36) * 51;
-						let g = ((n % 36) / 6) * 51;
-						let b = (n % 6) * 51;
-						Self::push_hex_rgb(&mut html, r, g, b);
-					},
-					232..=255 => {
-						let gray = 8 + (color - 232) * 10;
-						Self::push_hex_rgb(&mut html, gray, gray, gray);
-					},
-				},
-				Color::Rgb { r, g, b } => {
-					Self::push_hex_rgb(&mut html, *r, *g, *b);
-				},
-			};
-
+		if let Some(color) = self.background {
+			html.push_str("background:");
+			Self::append_color(&mut html, &color);
 			html.push(';');
 		}
 
