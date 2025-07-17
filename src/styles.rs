@@ -349,7 +349,17 @@ impl StyleNode {
 	pub fn to_html(&self) -> String {
 		let mut html = String::with_capacity(200);
 
-		html.push_str("<span style=\"");
+		let tag = if self.subscript {
+			"sub"
+		} else if self.superscript {
+			"sup"
+		} else {
+			"span"
+		};
+
+		html.push_str("<");
+		html.push_str(tag);
+		html.push_str(" style=\"");
 
 		if self.bold {
 			html.push_str("font-weight:bold;");
@@ -379,8 +389,6 @@ impl StyleNode {
 			html.push(';');
 		}
 
-		// subscript
-		// superscript
 		// blink
 		// reverse
 		// hidden
