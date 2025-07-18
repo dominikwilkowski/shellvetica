@@ -346,7 +346,7 @@ impl StyleNode {
 		};
 	}
 
-	pub fn to_html(&self) -> String {
+	pub fn to_html(&mut self) -> String {
 		let mut html = String::with_capacity(200);
 
 		let tag = if self.subscript {
@@ -390,7 +390,6 @@ impl StyleNode {
 		}
 
 		// blink
-		// reverse
 		// hidden
 		// strikethrough
 		// rapid_blink
@@ -400,6 +399,12 @@ impl StyleNode {
 		// framed
 		// encircled
 		// overlined
+
+		if self.reverse {
+			let bg = self.background;
+			self.background = self.foreground;
+			self.foreground = bg;
+		}
 
 		if let Some(color) = self.foreground {
 			html.push_str("color:");
