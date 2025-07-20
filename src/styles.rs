@@ -389,10 +389,22 @@ impl StyleNode {
 			html.push(';');
 		}
 
-		// blink
+		if self.blink {
+			// @keyframes blink {
+			// 	50% { opacity: 0; }
+			// }
+			html.push_str("animation:blink 1s step-start infinite;");
+		}
+
+		if self.rapid_blink {
+			// @keyframes blink {
+			// 	50% { opacity: 0; }
+			// }
+			html.push_str("animation:blink .5s step-start infinite;");
+		}
+
 		// hidden
 		// strikethrough
-		// rapid_blink
 		// font
 		// fraktur
 		// proportional_spacing
