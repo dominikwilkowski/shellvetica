@@ -403,8 +403,11 @@ impl StyleNode {
 			html.push_str("animation:blink .5s step-start infinite;");
 		}
 
+		if self.strikethrough {
+			html.push_str("text-decoration:line-through;");
+		}
+
 		// hidden
-		// strikethrough
 		// font
 		// fraktur
 		// proportional_spacing
